@@ -4,7 +4,7 @@
 
 # Documentation
 
-- See project.yml docs at [Docs](https://github.com/silvadev13/ApkBuilder/docs/config.rst)
+- See project.yml docs at [Docs](https://github.com/silvadev13/ApkBuilder/blob/main/docs/config.rst)
 
 ## Features
 
