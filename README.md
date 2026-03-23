@@ -1,6 +1,6 @@
 # ApkBuilder
 
-- ApkBuilder is a lightweight Android builder CLI.
+- ApkBuilder is a lightweight Android Project builder CLI.
 
 # Documentation
 
