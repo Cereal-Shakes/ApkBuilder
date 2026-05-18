@@ -1,40 +1,72 @@
-# ApkBuilder
+# Cerealicious — Android Build
 
-- ApkBuilder is a lightweight Android Project builder CLI.
+Gradle-free Android build system using `project.py` + `build.py`.
 
-# Documentation
+## Prerequisites
 
-- See project.yml docs at [Docs](https://github.com/silvadev13/ApkBuilder/blob/main/docs/config.rst)
+- Python 3.11+
+- Android SDK installed (`$ANDROID_SDK` or `$ANDROID_HOME` set)
+- `aapt2`, `javac`, `kotlinc`, `d8`, `apksigner` on PATH (or set in `project.yml`)
 
-## Features
+## Quick Start
 
-- [x] APK Compilation
-- [ ] AAB Support
-- [x] Java
-- [x] Kotlin
-- [ ] R8 / ProGuard
-- [x] ViewBinding
-- [ ] Jetpack Compose (not supported yet)
+```bash
+cd android/build
+pip install pyyaml
 
-## System dependencies
+# Debug build
+python build.py
 
-- `python`
-- `aapt2`
-- `javac`
-- `kotlinc`
-- `d8`
-- `apksigner`
+# Release build
+python build.py --release
 
-## Python dependencies
+# Clean then build
+python build.py --clean
+```
 
-- `pip install pyyaml`
+Output APK: `android/.build/cerealicious-debug.apk`
 
-## Building an APK
+## project.yml fields
 
-To compile your project, use the builder module:
+| Field | Default | Description |
+|---|---|---|
+| `sdk-min-api-version` | 21 | Minimum Android API level |
+| `sdk-api-version` | 31 | Target API level |
+| `build-type` | debug | `debug` or `release` |
+| `view-binding` | false | Enable View Binding generation |
+| `keystore-path` | — | Relative path to `.jks` file |
+| `java-version` | 17 | Java source/target compatibility |
 
-example:
+## Architecture
+
+The app is a **WebView wrapper** around the Cerealicious React SPA.
 
 ```
-python -m cli.builder example/
+SplashActivity (1.4s)
+  └── MainActivity
+        └── WebView → https://cerealicious.app
+              └── AndroidBridge (JS ↔ Java)
+                    ├── showOrderNotification()
+                    ├── vibrate()
+                    ├── isNativeApp()
+                    └── getLocale()
+```
+
+### Calling the bridge from React
+
+```ts
+if ((window as any).AndroidBridge?.isNativeApp()) {
+  (window as any).AndroidBridge.showOrderNotification(
+    "Order Delivered! 🍨",
+    "Your Cocoa Puff Delight has arrived."
+  );
+}
+```
+
+## Push Notifications
+
+FCM is wired up in `FCMService.java`. After the user logs in, POST their FCM token to:
+```
+POST https://api.cerealicious.app/devices/register
+{ "token": "<fcm_token>" }
 ```
