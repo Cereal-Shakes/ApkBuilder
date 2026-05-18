@@ -13,11 +13,37 @@ import {
   Star,
   ChevronLeft,
   Navigation,
+  BellRing,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/providers/trpc";
 
-// ─── Order status steps ───
+// ─── Android native bridge type ───────────────────────────────────────────────
+declare global {
+  interface Window {
+    TrackBridge?: {
+      getCurrentStatus: () => string;
+      refresh: () => void;
+      requestStatusAlert: (status: string) => void;
+    };
+    AndroidBridge?: {
+      isNativeApp: () => boolean;
+      vibrate: (ms: number) => void;
+      showOrderNotification: (title: string, message: string) => void;
+    };
+  }
+}
+
+const isAndroidApp = (): boolean => {
+  try {
+    return !!window.AndroidBridge?.isNativeApp();
+  } catch {
+    return false;
+  }
+};
+
+// ─── Order status steps ────────────────────────────────────────────────────────
 const STATUS_STEPS = [
   { key: "confirmed",    label: "Confirmed",   icon: CheckCircle2 },
   { key: "preparing",   label: "Preparing",   icon: Package },
@@ -36,7 +62,7 @@ const STATUS_MESSAGES: Record<string, string> = {
   delivered:  "Delivered! Enjoy your shake 🍨",
 };
 
-// ─── Simple Google Maps embed ───
+// ─── Google Maps embed ────────────────────────────────────────────────────────
 function DeliveryMap({
   lat,
   lng,
@@ -60,7 +86,9 @@ function DeliveryMap({
         <p className="text-amber-800 font-semibold">
           {driverName ? `${driverName} is on the way` : "Driver en route"}
         </p>
-        <p className="text-amber-500 text-sm mt-1">Live map available when driver shares location</p>
+        <p className="text-amber-500 text-sm mt-1">
+          Live map available when driver shares location
+        </p>
       </div>
     );
   }
@@ -86,30 +114,147 @@ function DeliveryMap({
   );
 }
 
+// ─── Native alert banner (Android only) ──────────────────────────────────────
+function NativeAlertBanner({
+  onRequest,
+  alertSet,
+}: {
+  onRequest: () => void;
+  alertSet: boolean;
+}) {
+  if (!isAndroidApp()) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`rounded-2xl border p-4 flex items-center justify-between ${
+        alertSet
+          ? "bg-green-50 border-green-200"
+          : "bg-amber-50 border-amber-200"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <BellRing
+          className={`w-5 h-5 ${alertSet ? "text-green-600" : "text-amber-500"}`}
+        />
+        <p className={`text-sm font-semibold ${alertSet ? "text-green-700" : "text-amber-800"}`}>
+          {alertSet
+            ? "You'll be notified when your order is out for delivery"
+            : "Get a notification when your order is on the way"}
+        </p>
+      </div>
+      {!alertSet && (
+        <button
+          onClick={onRequest}
+          className="text-xs font-bold text-amber-600 bg-white border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-50 transition-colors"
+        >
+          Notify me
+        </button>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function Track() {
   const { orderId } = useParams<{ orderId: string }>();
   const navigate = useNavigate();
   const id = Number(orderId);
 
-  // Poll every 8 seconds for real-time updates
+  const [nativeStatus, setNativeStatus]     = useState<string | null>(null);
+  const [nativeEta, setNativeEta]           = useState<string | null>(null);
+  const [alertSet, setAlertSet]             = useState(false);
+  const [nativePulse, setNativePulse]       = useState(false);
+  const prevNativeStatus                    = useRef<string | null>(null);
+
+  // tRPC polling (web fallback — still runs on Android for data richness)
   const { data, refetch } = trpc.tracking.getOrder.useQuery(
     { orderId: id },
     { enabled: !!id, refetchInterval: 8000 }
   );
 
   const latestTracking = data?.tracking?.[0];
-  const order = data?.order;
-  const currentStatus = latestTracking?.status ?? "confirmed";
+  const order          = data?.order;
+
+  // Prefer native status (lower latency) over tRPC
+  const currentStatus = nativeStatus ?? latestTracking?.status ?? "confirmed";
 
   const currentStepIndex = STATUS_STEPS.findIndex((s) => s.key === currentStatus);
-  const isDelivered = currentStatus === "delivered";
+  const isDelivered      = currentStatus === "delivered";
 
-  // ETA countdown
+  // ── Native event listener (TrackOrderActivity → React) ───────────────────
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { status, eta } = (e as CustomEvent<{ status: string; eta: string }>).detail;
+
+      if (status && status !== prevNativeStatus.current) {
+        prevNativeStatus.current = status;
+        setNativeStatus(status);
+        setNativePulse(true);
+        setTimeout(() => setNativePulse(false), 1200);
+
+        if (eta) setNativeEta(eta);
+
+        // If delivered — vibrate celebration from JS side too (no-op on web)
+        if (status === "delivered") {
+          window.AndroidBridge?.vibrate(400);
+        }
+      }
+    };
+
+    window.addEventListener("nativeStatusUpdate", handler);
+    return () => window.removeEventListener("nativeStatusUpdate", handler);
+  }, []);
+
+  // ── Seed nativeStatus from bridge on mount (resume case) ─────────────────
+  useEffect(() => {
+    if (!isAndroidApp()) return;
+    try {
+      const bridgeStatus = window.TrackBridge?.getCurrentStatus();
+      if (bridgeStatus && bridgeStatus !== "") {
+        setNativeStatus(bridgeStatus);
+        prevNativeStatus.current = bridgeStatus;
+      }
+    } catch {
+      // bridge not ready yet
+    }
+  }, []);
+
+  // ── Native alert request ──────────────────────────────────────────────────
+  const handleNativeAlert = () => {
+    try {
+      window.TrackBridge?.requestStatusAlert("out_for_delivery");
+      setAlertSet(true);
+    } catch {
+      // not in Android app
+    }
+  };
+
+  // ── Manual refresh (triggers native re-poll + tRPC refetch) ──────────────
+  const handleRefresh = () => {
+    refetch();
+    try {
+      window.TrackBridge?.refresh();
+    } catch {
+      // not in Android app
+    }
+  };
+
+  // ── ETA countdown (web ETA or native ETA) ────────────────────────────────
   const [eta, setEta] = useState<string | null>(null);
   useEffect(() => {
-    if (!latestTracking?.estimatedArrival) return;
+    const rawEta = nativeEta ?? latestTracking?.estimatedArrival;
+    if (!rawEta) return;
+
     const update = () => {
-      const diff = new Date(latestTracking.estimatedArrival!).getTime() - Date.now();
+      // nativeEta might be a plain string like "10 mins" — just display it
+      const asDate = new Date(rawEta);
+      if (isNaN(asDate.getTime())) {
+        setEta(rawEta);
+        return;
+      }
+      const diff = asDate.getTime() - Date.now();
       if (diff <= 0) { setEta("Arriving now"); return; }
       const mins = Math.floor(diff / 60000);
       const secs = Math.floor((diff % 60000) / 1000);
@@ -118,8 +263,9 @@ export default function Track() {
     update();
     const t = setInterval(update, 1000);
     return () => clearInterval(t);
-  }, [latestTracking?.estimatedArrival]);
+  }, [nativeEta, latestTracking?.estimatedArrival]);
 
+  // ── Loading state ─────────────────────────────────────────────────────────
   if (!order) {
     return (
       <div className="min-h-screen pt-20 flex items-center justify-center">
@@ -137,14 +283,26 @@ export default function Track() {
     <div className="min-h-screen pt-20 bg-gradient-to-b from-amber-50/50 to-white pb-12">
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-6">
 
-        {/* Back */}
-        <button
-          onClick={() => navigate("/")}
-          className="flex items-center gap-2 text-amber-600 hover:text-amber-800 transition-colors"
-        >
-          <ChevronLeft className="w-4 h-4" />
-          Back to Home
-        </button>
+        {/* Back + Refresh */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => navigate("/")}
+            className="flex items-center gap-2 text-amber-600 hover:text-amber-800 transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Back to Home
+          </button>
+          <button
+            onClick={handleRefresh}
+            className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-600 transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Refresh
+          </button>
+        </div>
+
+        {/* Native alert banner (Android only) */}
+        <NativeAlertBanner onRequest={handleNativeAlert} alertSet={alertSet} />
 
         {/* Order Header */}
         <div className="bg-white rounded-2xl border border-amber-100 p-6">
@@ -185,8 +343,13 @@ export default function Track() {
           <motion.div
             key={currentStatus}
             initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
+            animate={{
+              opacity: 1,
+              y: 0,
+              scale: nativePulse ? [1, 1.03, 1] : 1,
+            }}
             exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.35 }}
             className={`rounded-2xl p-5 text-center font-semibold text-lg ${
               isDelivered
                 ? "bg-green-50 text-green-700 border border-green-200"
@@ -194,6 +357,11 @@ export default function Track() {
             }`}
           >
             {STATUS_MESSAGES[currentStatus] ?? "Tracking your order..."}
+            {nativeStatus && (
+              <span className="ml-2 text-xs bg-white/70 text-amber-600 px-2 py-0.5 rounded-full align-middle">
+                live
+              </span>
+            )}
           </motion.div>
         </AnimatePresence>
 
@@ -217,7 +385,6 @@ export default function Track() {
         <div className="bg-white rounded-2xl border border-amber-100 p-6">
           <h2 className="font-bold text-amber-900 mb-6">Order Progress</h2>
           <div className="relative">
-            {/* Connector line */}
             <div className="absolute left-5 top-5 bottom-5 w-0.5 bg-amber-100" />
             <div
               className="absolute left-5 top-5 w-0.5 bg-gradient-to-b from-amber-500 to-orange-400 transition-all duration-1000"
@@ -227,8 +394,8 @@ export default function Track() {
             />
             <div className="space-y-6">
               {STATUS_STEPS.map((step, i) => {
-                const Icon = step.icon;
-                const done = i <= currentStepIndex;
+                const Icon  = step.icon;
+                const done   = i <= currentStepIndex;
                 const active = i === currentStepIndex;
                 return (
                   <div key={step.key} className="flex items-center gap-4 relative">
@@ -258,80 +425,56 @@ export default function Track() {
           </div>
         </div>
 
-        {/* Map */}
+        {/* Map (in-transit only) */}
         {["in_transit", "nearby", "picked_up"].includes(currentStatus) && (
           <div className="bg-white rounded-2xl border border-amber-100 p-6 space-y-4">
             <h2 className="font-bold text-amber-900">Driver Location</h2>
             <DeliveryMap
-              lat={latestTracking?.lat?.toString()}
-              lng={latestTracking?.lng?.toString()}
-              driverName={latestTracking?.driverName ?? undefined}
+              lat={latestTracking?.latitude?.toString()}
+              lng={latestTracking?.longitude?.toString()}
+              driverName={latestTracking?.driverName}
             />
             {latestTracking?.driverName && (
-              <div className="flex items-center justify-between pt-2">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                    <span className="text-lg">🛵</span>
+                    <span className="text-lg">🧑‍🍳</span>
                   </div>
                   <div>
-                    <p className="font-semibold text-amber-900">{latestTracking.driverName}</p>
-                    <p className="text-xs text-amber-500">{latestTracking.driverVehicle ?? "Delivery Driver"}</p>
+                    <p className="font-semibold text-amber-900 text-sm">{latestTracking.driverName}</p>
+                    <p className="text-amber-500 text-xs">Your delivery driver</p>
                   </div>
                 </div>
-                {latestTracking.driverPhone && (
-                  <div className="flex gap-2">
-                    <a
-                      href={`tel:${latestTracking.driverPhone}`}
-                      className="w-10 h-10 rounded-xl bg-green-50 border border-green-200 flex items-center justify-center hover:bg-green-100 transition"
-                    >
-                      <Phone className="w-4 h-4 text-green-600" />
-                    </a>
-                    <a
-                      href={`sms:${latestTracking.driverPhone}`}
-                      className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center hover:bg-blue-100 transition"
-                    >
-                      <MessageSquare className="w-4 h-4 text-blue-600" />
-                    </a>
-                  </div>
-                )}
+                <div className="flex gap-2">
+                  <button className="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center hover:bg-amber-100 transition-colors">
+                    <Phone className="w-4 h-4 text-amber-600" />
+                  </button>
+                  <button className="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center hover:bg-amber-100 transition-colors">
+                    <MessageSquare className="w-4 h-4 text-amber-600" />
+                  </button>
+                </div>
               </div>
             )}
           </div>
         )}
 
-        {/* Delivery Address */}
-        {order.deliveryAddress && (
-          <div className="bg-white rounded-2xl border border-amber-100 p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
-              <MapPin className="w-5 h-5 text-amber-500" />
-            </div>
-            <div>
-              <p className="text-xs text-amber-500">Delivering to</p>
-              <p className="font-semibold text-amber-900">{order.deliveryAddress}</p>
-            </div>
-          </div>
-        )}
-
-        {/* Delivered CTA */}
+        {/* Delivered celebration */}
         {isDelivered && (
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-2xl border border-green-200 p-6 text-center space-y-4"
+            className="bg-green-50 rounded-2xl border border-green-200 p-6 text-center space-y-3"
           >
-            <div className="text-5xl">🍨</div>
+            <div className="text-5xl">🎉</div>
             <h2 className="text-xl font-black text-green-800">Enjoy your shake!</h2>
-            <p className="text-green-600 text-sm">How was your experience?</p>
-            <div className="flex justify-center gap-2">
-              {[1,2,3,4,5].map((star) => (
-                <button key={star} className="text-3xl hover:scale-125 transition-transform">⭐</button>
-              ))}
-            </div>
+            <p className="text-green-600 text-sm">
+              Leave a review and earn loyalty points 🌟
+            </p>
             <Button
-              onClick={() => navigate("/menu")}
-              className="w-full bg-amber-500 hover:bg-amber-600 rounded-xl"
+              onClick={() => navigate("/")}
+              className="bg-green-600 hover:bg-green-700 text-white rounded-xl px-6"
             >
-              Order Again
+              Back to Menu
             </Button>
           </motion.div>
         )}
