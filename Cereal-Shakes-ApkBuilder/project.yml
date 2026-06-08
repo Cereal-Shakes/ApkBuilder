@@ -6,9 +6,9 @@ android:
   version-name: "1.0.0"
 
   # ── Build ──
-  build-type: debug              # change to "release" for production APK
+  build-type: debug
 
-  # ── Signing (release only) ──
+  # ── Signing ──
   keystore-path: keystore/cerealicious.jks
   keystore-alias: cerealicious
   keystore-store-pass: changeme
@@ -19,25 +19,24 @@ android:
 
   # ── Source layout ──
   manifest-path: AndroidManifest.xml
-  sources-path: src/java
-  res-path: src/res
-  assets-path: src/assets
-  jni-path: src/jniLibs
+  sources-path: android-src/java
+  res-path: android-src/res
+  assets-path: android-src/assets
+  jni-path: android-src/jniLibs
 
   # ── View Binding ──
-  view-binding: true
+  view-binding: false
 
-  # ── Android SDK (override or set ANDROID_SDK env var) ──
-  # sdk-path: /path/to/android-sdk
+  # ── Android SDK ──
+  sdk-path: /opt/android-sdk
 
 # ── Output dirs ──
 build-path: .build
 libs-path: .libs
 
-# ── Binary overrides (optional — falls back to PATH) ──
-# bins:
-#   aapt2:     /path/to/aapt2
-#   javac:     /path/to/javac
-#   kotlinc:   /path/to/kotlinc
-#   d8:        /path/to/d8
-#   apksigner: /path/to/apksigner
+bins:
+  kotlinc:   /opt/kotlinc/bin/kotlinc
+  aapt2:     /opt/android-sdk/build-tools/34.0.0/aapt2
+  javac:     /usr/bin/javac
+  d8:        /opt/android-sdk/build-tools/34.0.0/d8
+  apksigner: /opt/android-sdk/build-tools/34.0.0/apksigner

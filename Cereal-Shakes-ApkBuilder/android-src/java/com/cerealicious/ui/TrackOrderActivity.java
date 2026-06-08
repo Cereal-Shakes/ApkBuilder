@@ -235,7 +235,7 @@ public class TrackOrderActivity extends AppCompatActivity {
         NotificationCompat.Builder builder = new NotificationCompat.Builder(
             this, CerealiciousApp.CHANNEL_ORDERS
         )
-            .setSmallIcon(R.drawable.ic_notification)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(message)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
